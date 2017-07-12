@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"github.com/gin-gonic/gin"
 	"gopkg.in/dgrijalva/jwt-go.v3"
 )
@@ -19,12 +21,21 @@ type GinJWTMiddleware struct {
 	// Realm name to display to the user. Required.
 	Realm string
 
-	// signing algorithm - possible values are HS256, HS384, HS512
+	// signing algorithm - possible values are:
+	//
+	// 		HS256, HS384, HS512
+	//    RS256, RS384, RS512
+	//    ES256, ES384, ES512
+	//
 	// Optional, default is HS256.
 	SigningAlgorithm string
 
-	// Secret key used for signing. Required.
+	// HMAC Secret key used for signing. Required for HSxxx algorithms
 	Key []byte
+
+	// Asymmetric keys used for signing. Required for RSxxx and ESxxx algorithms
+	SignKey   interface{}
+	VerifyKey interface{}
 
 	// Duration that a jwt token is valid. Optional, defaults to one hour.
 	Timeout time.Duration
@@ -130,11 +141,47 @@ func (mw *GinJWTMiddleware) MiddlewareInit() error {
 		return errors.New("realm is required")
 	}
 
-	if mw.Key == nil {
-		return errors.New("secret key is required")
+	isSymmetricAlgo := mw.SigningAlgorithm == "HS256" || mw.SigningAlgorithm == "HS384" || mw.SigningAlgorithm == "HS512"
+
+	if isSymmetricAlgo {
+		if mw.Key == nil {
+			return errors.New("secret key is required")
+		}
+		// symmetrical algorithms use the same key for signing and verification of token
+		mw.SignKey = mw.Key
+		mw.VerifyKey = mw.Key
+	} else {
+		if isBadPrivateKey(mw.SignKey) {
+			return errors.New("private key is required")
+		}
+		if isBadPublicKey(mw.VerifyKey) {
+			return errors.New("public key is required")
+		}
 	}
 
 	return nil
+}
+
+func isBadPrivateKey(key interface{}) bool {
+	switch v := key.(type) {
+	case *rsa.PrivateKey:
+		return v == nil
+	case *ecdsa.PrivateKey:
+		return v == nil
+	default:
+		return true
+	}
+}
+
+func isBadPublicKey(key interface{}) bool {
+	switch v := key.(type) {
+	case *rsa.PublicKey:
+		return v == nil
+	case *ecdsa.PublicKey:
+		return v == nil
+	default:
+		return true
+	}
 }
 
 // MiddlewareFunc makes GinJWTMiddleware implement the Middleware interface.
@@ -180,7 +227,10 @@ func (mw *GinJWTMiddleware) middlewareImpl(c *gin.Context) {
 func (mw *GinJWTMiddleware) LoginHandler(c *gin.Context) {
 
 	// Initial middleware default setting.
-	mw.MiddlewareInit()
+	if err := mw.MiddlewareInit(); err != nil {
+		mw.unauthorized(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	var loginVals Login
 
@@ -220,7 +270,7 @@ func (mw *GinJWTMiddleware) LoginHandler(c *gin.Context) {
 	claims["exp"] = expire.Unix()
 	claims["orig_iat"] = mw.TimeFunc().Unix()
 
-	tokenString, err := token.SignedString(mw.Key)
+	tokenString, err := token.SignedString(mw.SignKey)
 
 	if err != nil {
 		mw.unauthorized(c, http.StatusUnauthorized, "Create JWT Token faild")
@@ -260,7 +310,7 @@ func (mw *GinJWTMiddleware) RefreshHandler(c *gin.Context) {
 	newClaims["exp"] = expire.Unix()
 	newClaims["orig_iat"] = origIat
 
-	tokenString, err := newToken.SignedString(mw.Key)
+	tokenString, err := newToken.SignedString(mw.SignKey)
 
 	if err != nil {
 		mw.unauthorized(c, http.StatusUnauthorized, "Create JWT Token faild")
@@ -301,7 +351,7 @@ func (mw *GinJWTMiddleware) TokenGenerator(userID string) string {
 	claims["exp"] = mw.TimeFunc().Add(mw.Timeout).Unix()
 	claims["orig_iat"] = mw.TimeFunc().Unix()
 
-	tokenString, _ := token.SignedString(mw.Key)
+	tokenString, _ := token.SignedString(mw.SignKey)
 
 	return tokenString
 }
@@ -364,7 +414,7 @@ func (mw *GinJWTMiddleware) parseToken(c *gin.Context) (*jwt.Token, error) {
 			return nil, errors.New("invalid signing algorithm")
 		}
 
-		return mw.Key, nil
+		return mw.VerifyKey, nil
 	})
 }
 
