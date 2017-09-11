@@ -8,6 +8,7 @@ import (
 
 	"crypto/ecdsa"
 	"crypto/rsa"
+
 	"github.com/gin-gonic/gin"
 	"gopkg.in/dgrijalva/jwt-go.v3"
 )
@@ -151,9 +152,9 @@ func (mw *GinJWTMiddleware) MiddlewareInit() error {
 		mw.SignKey = mw.Key
 		mw.VerifyKey = mw.Key
 	} else {
-		if isBadPrivateKey(mw.SignKey) {
-			return errors.New("private key is required")
-		}
+		// if isBadPrivateKey(mw.SignKey) {
+		// 	return errors.New("private key is required")
+		// }
 		if isBadPublicKey(mw.VerifyKey) {
 			return errors.New("public key is required")
 		}
